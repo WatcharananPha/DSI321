@@ -1,0 +1,105 @@
+x-global-environment: &global-environment
+  env_file:
+    - .env
+
+services:
+  lakefsdb:
+    container_name: lakefs_db
+    image: treeverse/lakefs:1.7.0
+    ports:
+      - "8001:8000"
+    environment:
+      LAKEFS_INSTALLATION_USER_NAME: "admin"
+      LAKEFS_INSTALLATION_ACCESS_KEY_ID: ${ACCESS_KEY}
+      LAKEFS_INSTALLATION_SECRET_ACCESS_KEY: ${SECRET_KEY}
+      LAKEFS_DATABASE_TYPE: "local"
+      LAKEFS_AUTH_ENCRYPT_SECRET_KEY: "aVVerySecretKeyPleaseChangeMe"
+      LAKEFS_BLOCKSTORE_TYPE: "local"
+    volumes:
+      - lakefs_data:/home/lakefs/data
+      - lakefs_local_blockstore:/home/lakefs/local_blockstore
+    networks:
+      - app_network
+    profiles: ["lakefs"]
+    <<: *global-environment
+
+  database:
+    container_name: prefect_db
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-prefect}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-prefectpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-prefect}
+    expose:
+      - "5432"
+    volumes:
+      - prefect_postgres_data:/var/lib/postgresql/data
+    networks:
+      - app_network
+    profiles: ["prefect-server"]
+    <<: *global-environment
+
+  server:
+    container_name: prefect_server
+    image: prefecthq/prefect:2-latest
+    restart: always
+    volumes:
+      - prefect_server_root:/root/.prefect
+    entrypoint: ["prefect", "server", "start", "--host", "0.0.0.0", "--port", "4200"]
+    environment:
+      PREFECT_UI_URL: "http://localhost:4200/api"
+      PREFECT_API_URL: "http://prefect_server:4200/api"
+      PREFECT_SERVER_API_HOST: "0.0.0.0"
+      PREFECT_API_DATABASE_CONNECTION_URL: "postgresql+asyncpg://${POSTGRES_USER:-prefect}:${POSTGRES_PASSWORD:-prefectpassword}@database:5432/${POSTGRES_DB:-prefect}"
+    ports:
+      - "4200:4200"
+    depends_on:
+      - database
+    networks:
+      - app_network
+    profiles: ["prefect-server"]
+    <<: *global-environment
+
+  worker:
+    container_name: prefect_worker_egat
+    build:
+      context: .
+      dockerfile: config/docker/Dockerfile.worker
+    restart: always
+    entrypoint: ["prefect", "worker", "start", "--pool", "x-worker"]
+    working_dir: "/app"
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+      - ./pyproject.toml:/app/pyproject.toml
+      - ./poetry.lock:/app/poetry.lock
+      - ./.env:/app/.env
+      - ./data_output_host:/app/data_output
+    environment:
+      PREFECT_API_URL: "http://server:4200/api"
+      LAKEFS_ENDPOINT_URL: ${LAKEFS_ENDPOINT_URL}
+      LAKEFS_ACCESS_KEY_ID: ${LAKEFS_ACCESS_KEY_ID}
+      LAKEFS_SECRET_ACCESS_KEY: ${LAKEFS_SECRET_ACCESS_KEY}
+      LAKEFS_REPOSITORY: ${LAKEFS_REPOSITORY}
+      LAKEFS_BRANCH: ${LAKEFS_BRANCH}
+      LAKEFS_EGAT_DATA_PATH_PREFIX: ${LAKEFS_EGAT_DATA_PATH_PREFIX}
+      EGAT_URL: ${EGAT_URL}
+    depends_on:
+      - server
+      - database
+      - lakefsdb
+    networks:
+      - app_network
+    profiles: ["worker"]
+    <<: *global-environment
+
+volumes:
+  lakefs_data:
+  lakefs_local_blockstore:
+  prefect_postgres_data:
+  prefect_server_root:
+
+networks:
+  app_network:
+    driver: bridge
