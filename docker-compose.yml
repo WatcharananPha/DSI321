@@ -1,61 +1,92 @@
+x-global-environment: &global-environment
+  env_file:
+    - .env
+
 services:
-  minio:
-    image: minio/minio:latest
+  lakefsdb:
+    container_name: lakefs_server
+    image: treeverse/lakefs:1.7.0
     ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio-data:/data
+      - "8001:8000"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadminpassword
-    command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-
-  lakefs:
-    image: treeverse/lakefs:latest
-    ports:
-      - "8000:8000"
-    restart: on-failure
-    depends_on:
-      minio:
-        condition: service_healthy
-    environment:
+      LAKEFS_INSTALLATION_USER_NAME: "admin"
+      LAKEFS_INSTALLATION_ACCESS_KEY_ID: ${ACCESS_KEY}
+      LAKEFS_INSTALLATION_SECRET_ACCESS_KEY: ${SECRET_KEY}
       LAKEFS_DATABASE_TYPE: "local"
-      LAKEFS_DATABASE_LOCAL_PATH: "/app/lakefs_data/metadata"
-
-      # สำคัญ: เปลี่ยนค่านี้เป็น Random String ที่ปลอดภัยและมีความยาวอย่างน้อย 32 ตัวอักษร
-      # ห้ามใช้ค่านี้ใน Production หรือการใช้งานจริง
-      LAKEFS_AUTH_ENCRYPT_SECRET_KEY: "YOUR_OWN_VERY_SECURE_RANDOM_KEY_32_BYTES_OR_LONGER"
-
-      LAKEFS_BLOCKSTORE_TYPE: "s3"
-      LAKEFS_BLOCKSTORE_S3_ENDPOINT: "http://minio:9000"
-      LAKEFS_BLOCKSTORE_S3_REGION: "us-east-1" # สามารถเป็น Region ใดก็ได้เมื่อใช้ MinIO
-      LAKEFS_BLOCKSTORE_S3_FORCE_PATH_STYLE: "true"
-
-      # Access Key และ Secret Key เริ่มต้นสำหรับการ Setup lakeFS ครั้งแรกผ่าน UI
-      # หรือสำหรับการใช้งาน API โดยตรง (ถ้าไม่ได้ตั้งค่า User อื่น)
-      LAKEFS_AUTH_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE"
-      LAKEFS_AUTH_SECRET_ACCESS_KEY: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-
-      LAKEFS_GATEWAYS_S3_DOMAIN_NAME: "s3.local.lakefs.io" # สำหรับ S3 Gateway (ถ้าใช้)
-
-      # (Optional) สามารถเปิดใช้งาน Stats และ Version Check ได้
-      # LAKEFS_STATS_ENABLED: "true"
-      # LAKEFS_SECURITY_CHECK_LATEST_VERSION: "true"
+      LAKEFS_AUTH_ENCRYPT_SECRET_KEY: "a_very_long_and_random_secret_key_for_lakefs_auth"
+      LAKEFS_BLOCKSTORE_TYPE: "local"
+      LAKEFS_BLOCKSTORE_LOCAL_PATH: "/home/lakefs/storage"
+    <<: *global-environment
+    networks:
+      - prefect_network
     volumes:
-      # Mount volume เพื่อ persist local metadata ของ lakeFS บน host machine
-      # ข้อมูลนี้จะถูกเก็บไว้ใน Path ที่ระบุโดย LAKEFS_DATABASE_LOCAL_PATH ภายใน container
-      - lakefs-local-metadata:/app/lakefs_data/metadata
+      - ./lakefs_data:/home/lakefs/storage
+
+  database:
+    image: postgres:14-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    expose:
+      - "5432"
+    volumes:
+      - prefect_db_data:/var/lib/postgresql/data
+    <<: *global-environment
+    networks:
+      - prefect_network
+
+  server:
+    container_name: prefect_server
+    image: prefecthq/prefect:2-latest
+    restart: always
+    volumes:
+      - prefect_server_data:/root/.prefect
+    entrypoint: ["prefect", "server", "start"]
+    environment:
+      PREFECT_UI_URL: "http://127.0.0.1:4200"
+      PREFECT_API_URL: "http://prefect_server:4200/api"
+      PREFECT_SERVER_API_HOST: "0.0.0.0"
+      PREFECT_API_DATABASE_CONNECTION_URL: "postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}"
+    ports:
+      - "4200:4200"
+    depends_on:
+      - database
+    <<: *global-environment
+    networks:
+      - prefect_network
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: prefect_worker_egat
+    restart: always
+    entrypoint: ["prefect", "worker", "start", "-p", "default-agent-pool", "-q", "default"]
+    working_dir: "/opt/prefect/flows"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      PREFECT_API_URL: "http://prefect_server:4200/api"
+      ACCESS_KEY: ${ACCESS_KEY}
+      SECRET_KEY: ${SECRET_KEY}
+      LAKEFS_ENDPOINT: ${LAKEFS_ENDPOINT}
+      LAKEFS_REPOSITORY: ${LAKEFS_REPOSITORY}
+      LAKEFS_BRANCH: ${LAKEFS_BRANCH}
+      LAKEFS_PATH_PARQUET: ${LAKEFS_PATH_PARQUET}
+    depends_on:
+      - server
+      - lakefsdb
+    <<: *global-environment
+    networks:
+      - prefect_network
 
 volumes:
-  minio-data:
-  lakefs-local-metadata: # Volume สำหรับเก็บ local metadata ของ lakeFS
+  prefect_db_data:
+  prefect_server_data:
+  lakefs_data:
 
 networks:
-  default:
-    name: egat_scraping_network # หรือชื่อ Network ที่คุณต้องการ
+  prefect_network:
+    driver: bridge
