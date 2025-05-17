@@ -11,7 +11,9 @@ from prefect import task, flow, get_run_logger
 from dotenv import load_dotenv
 import lakefs_sdk
 from lakefs_sdk.api import commits_api
-from lakefs_sdk.model.commit_creation import CommitCreation
+from lakefs_sdk.models.commit_creation import CommitCreation
+from lakefs_sdk.models.repository_creation import RepositoryCreation
+from lakefs_sdk.models.branch_creation import BranchCreation
 
 load_dotenv()
 
@@ -120,10 +122,10 @@ def ensure_lakefs_repository_and_branch():
     repo_api = lakefs_sdk.RepositoriesApi(client)
     branch_api = lakefs_sdk.BranchesApi(client)
 
+    repo = None
     try:
-        repo_api.get_repository(LAKEFS_REPOSITORY)
+        repo = repo_api.get_repository(LAKEFS_REPOSITORY)
     except:
-        from lakefs_sdk.model.repository_creation import RepositoryCreation
         repo_creation = RepositoryCreation(
             name=LAKEFS_REPOSITORY,
             storage_namespace=f"local:///home/lakefs/{LAKEFS_REPOSITORY}",
@@ -133,13 +135,14 @@ def ensure_lakefs_repository_and_branch():
         repo_api.create_repository(repository_creation=repo_creation)
 
     if LAKEFS_BRANCH != "main":
+        branch = None
         try:
-            branch_api.get_branch(LAKEFS_REPOSITORY, LAKEFS_BRANCH)
+            branch = branch_api.get_branch(LAKEFS_REPOSITORY, LAKEFS_BRANCH)
         except:
-            from lakefs_sdk.model.branch_creation import BranchCreation
             source_commit_id = branch_api.get_branch(LAKEFS_REPOSITORY, "main").commit_id
             branch_creation = BranchCreation(name=LAKEFS_BRANCH, source=source_commit_id)
             branch_api.create_branch(LAKEFS_REPOSITORY, branch_creation)
+
 
 @flow(name="EGAT Realtime Data Pipeline")
 def egat_pipeline():
