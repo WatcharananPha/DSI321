@@ -1,105 +1,62 @@
-x-global-environment: &global-environment
-  env_file:
-    - .env
-
 services:
-  lakefsdb:
-    container_name: lakefs_db
-    image: treeverse/lakefs:1.7.0
+  minio:
+    image: minio/minio:latest
     ports:
-      - "8001:8000"
-    environment:
-      LAKEFS_INSTALLATION_USER_NAME: "admin"
-      LAKEFS_INSTALLATION_ACCESS_KEY_ID: ${ACCESS_KEY}
-      LAKEFS_INSTALLATION_SECRET_ACCESS_KEY: ${SECRET_KEY}
-      LAKEFS_DATABASE_TYPE: "local"
-      LAKEFS_AUTH_ENCRYPT_SECRET_KEY: "aVVerySecretKeyPleaseChangeMe"
-      LAKEFS_BLOCKSTORE_TYPE: "local"
+      - "9000:9000"
+      - "9001:9001"
     volumes:
-      - lakefs_data:/home/lakefs/data
-      - lakefs_local_blockstore:/home/lakefs/local_blockstore
-    networks:
-      - app_network
-    profiles: ["lakefs"]
-    <<: *global-environment
+      - minio-data:/data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadminpassword
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
 
-  database:
-    container_name: prefect_db
-    image: postgres:15-alpine
-    restart: always
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-prefect}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-prefectpassword}
-      POSTGRES_DB: ${POSTGRES_DB:-prefect}
-    expose:
-      - "5432"
-    volumes:
-      - prefect_postgres_data:/var/lib/postgresql/data
-    networks:
-      - app_network
-    profiles: ["prefect-server"]
-    <<: *global-environment
-
-  server:
-    container_name: prefect_server
-    image: prefecthq/prefect:2-latest
-    restart: always
-    volumes:
-      - prefect_server_root:/root/.prefect
-    entrypoint: ["prefect", "server", "start", "--host", "0.0.0.0", "--port", "4200"]
-    environment:
-      PREFECT_UI_URL: "http://localhost:4200/api"
-      PREFECT_API_URL: "http://prefect_server:4200/api"
-      PREFECT_SERVER_API_HOST: "0.0.0.0"
-      PREFECT_API_DATABASE_CONNECTION_URL: "postgresql+asyncpg://${POSTGRES_USER:-prefect}:${POSTGRES_PASSWORD:-prefectpassword}@database:5432/${POSTGRES_DB:-prefect}"
+  lakefs-db:
+    image: postgres:13
     ports:
-      - "4200:4200"
-    depends_on:
-      - database
-    networks:
-      - app_network
-    profiles: ["prefect-server"]
-    <<: *global-environment
-
-  worker:
-    container_name: prefect_worker_egat
-    build:
-      context: .
-      dockerfile: config/docker/Dockerfile.worker
-    restart: always
-    entrypoint: ["prefect", "worker", "start", "--pool", "x-worker"]
-    working_dir: "/app"
+      - "5432:5432"
     volumes:
-      - ./src:/app/src
-      - ./config:/app/config
-      - ./pyproject.toml:/app/pyproject.toml
-      - ./poetry.lock:/app/poetry.lock
-      - ./.env:/app/.env
-      - ./data_output_host:/app/data_output
+      - lakefs-db-data:/var/lib/postgresql/data
     environment:
-      PREFECT_API_URL: "http://server:4200/api"
-      LAKEFS_ENDPOINT_URL: ${LAKEFS_ENDPOINT_URL}
-      LAKEFS_ACCESS_KEY_ID: ${LAKEFS_ACCESS_KEY_ID}
-      LAKEFS_SECRET_ACCESS_KEY: ${LAKEFS_SECRET_ACCESS_KEY}
-      LAKEFS_REPOSITORY: ${LAKEFS_REPOSITORY}
-      LAKEFS_BRANCH: ${LAKEFS_BRANCH}
-      LAKEFS_EGAT_DATA_PATH_PREFIX: ${LAKEFS_EGAT_DATA_PATH_PREFIX}
-      EGAT_URL: ${EGAT_URL}
+      POSTGRES_USER: lakefs
+      POSTGRES_PASSWORD: lakefspassword
+      POSTGRES_DB: lakefs_db
+    healthcheck: # <--- เพิ่มส่วนนี้เข้ามา
+      test: ["CMD-SHELL", "pg_isready -U lakefs -d lakefs_db -h localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s # ให้เวลากับ PostgreSQL ในการเริ่มทำงานก่อนที่จะเริ่มเช็ค health
+
+  lakefs:
+    image: treeverse/lakefs:latest
+    ports:
+      - "8000:8000"
     depends_on:
-      - server
-      - database
-      - lakefsdb
-    networks:
-      - app_network
-    profiles: ["worker"]
-    <<: *global-environment
+      minio:
+        condition: service_healthy
+      lakefs-db:
+        condition: service_healthy # ตอนนี้จะทำงานได้ถูกต้องแล้ว
+    environment:
+      LAKEFS_DATABASE_CONNECTION_STRING: "postgres://lakefs:lakefspassword@lakefs-db:5432/lakefs_db"
+      LAKEFS_AUTH_ENCRYPT_SECRET_KEY: "averysecretkeythatisatleast32bytes"
+      LAKEFS_BLOCKSTORE_TYPE: "s3"
+      LAKEFS_BLOCKSTORE_S3_ENDPOINT: "http://minio:9000"
+      LAKEFS_BLOCKSTORE_S3_REGION: "us-east-1"
+      LAKEFS_BLOCKSTORE_S3_FORCE_PATH_STYLE: "true"
+      LAKEFS_AUTH_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE"
+      LAKEFS_AUTH_SECRET_ACCESS_KEY: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+      LAKEFS_GATEWAYS_S3_DOMAIN_NAME: "s3.local.lakefs.io"
 
 volumes:
-  lakefs_data:
-  lakefs_local_blockstore:
-  prefect_postgres_data:
-  prefect_server_root:
+  minio-data:
+  lakefs-db-data:
 
 networks:
-  app_network:
-    driver: bridge
+  default:
+    name: egat_scraping_network

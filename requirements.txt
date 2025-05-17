@@ -1,6 +1,6 @@
-prefect>=2.14.0,<3.0.0
-lakefs_client>=0.91.0
+prefect>=2.10
+lakefs-client
+pandas
 selenium
 webdriver-manager
-pandas
 python-dotenv
