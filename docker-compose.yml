@@ -16,47 +16,46 @@ services:
       timeout: 20s
       retries: 3
 
-  lakefs-db:
-    image: postgres:13
-    ports:
-      - "5432:5432"
-    volumes:
-      - lakefs-db-data:/var/lib/postgresql/data
-    environment:
-      POSTGRES_USER: lakefs
-      POSTGRES_PASSWORD: lakefspassword
-      POSTGRES_DB: lakefs_db
-    healthcheck: # <--- เพิ่มส่วนนี้เข้ามา
-      test: ["CMD-SHELL", "pg_isready -U lakefs -d lakefs_db -h localhost"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s # ให้เวลากับ PostgreSQL ในการเริ่มทำงานก่อนที่จะเริ่มเช็ค health
-
   lakefs:
     image: treeverse/lakefs:latest
     ports:
       - "8000:8000"
+    restart: on-failure
     depends_on:
       minio:
         condition: service_healthy
-      lakefs-db:
-        condition: service_healthy # ตอนนี้จะทำงานได้ถูกต้องแล้ว
     environment:
-      LAKEFS_DATABASE_CONNECTION_STRING: "postgres://lakefs:lakefspassword@lakefs-db:5432/lakefs_db"
-      LAKEFS_AUTH_ENCRYPT_SECRET_KEY: "averysecretkeythatisatleast32bytes"
+      LAKEFS_DATABASE_TYPE: "local"
+      LAKEFS_DATABASE_LOCAL_PATH: "/app/lakefs_data/metadata"
+
+      # สำคัญ: เปลี่ยนค่านี้เป็น Random String ที่ปลอดภัยและมีความยาวอย่างน้อย 32 ตัวอักษร
+      # ห้ามใช้ค่านี้ใน Production หรือการใช้งานจริง
+      LAKEFS_AUTH_ENCRYPT_SECRET_KEY: "YOUR_OWN_VERY_SECURE_RANDOM_KEY_32_BYTES_OR_LONGER"
+
       LAKEFS_BLOCKSTORE_TYPE: "s3"
       LAKEFS_BLOCKSTORE_S3_ENDPOINT: "http://minio:9000"
-      LAKEFS_BLOCKSTORE_S3_REGION: "us-east-1"
+      LAKEFS_BLOCKSTORE_S3_REGION: "us-east-1" # สามารถเป็น Region ใดก็ได้เมื่อใช้ MinIO
       LAKEFS_BLOCKSTORE_S3_FORCE_PATH_STYLE: "true"
+
+      # Access Key และ Secret Key เริ่มต้นสำหรับการ Setup lakeFS ครั้งแรกผ่าน UI
+      # หรือสำหรับการใช้งาน API โดยตรง (ถ้าไม่ได้ตั้งค่า User อื่น)
       LAKEFS_AUTH_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE"
       LAKEFS_AUTH_SECRET_ACCESS_KEY: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-      LAKEFS_GATEWAYS_S3_DOMAIN_NAME: "s3.local.lakefs.io"
+
+      LAKEFS_GATEWAYS_S3_DOMAIN_NAME: "s3.local.lakefs.io" # สำหรับ S3 Gateway (ถ้าใช้)
+
+      # (Optional) สามารถเปิดใช้งาน Stats และ Version Check ได้
+      # LAKEFS_STATS_ENABLED: "true"
+      # LAKEFS_SECURITY_CHECK_LATEST_VERSION: "true"
+    volumes:
+      # Mount volume เพื่อ persist local metadata ของ lakeFS บน host machine
+      # ข้อมูลนี้จะถูกเก็บไว้ใน Path ที่ระบุโดย LAKEFS_DATABASE_LOCAL_PATH ภายใน container
+      - lakefs-local-metadata:/app/lakefs_data/metadata
 
 volumes:
   minio-data:
-  lakefs-db-data:
+  lakefs-local-metadata: # Volume สำหรับเก็บ local metadata ของ lakeFS
 
 networks:
   default:
-    name: egat_scraping_network
+    name: egat_scraping_network # หรือชื่อ Network ที่คุณต้องการ
