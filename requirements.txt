@@ -1,7 +1,7 @@
 pandas
 selenium
 webdriver-manager
-prefect>=2.10 
+prefect==3.0.5
 lakefs==0.10.0
 lakefs-client==1.44.0
 lakefs-sdk==1.54.0
@@ -10,3 +10,6 @@ s3fs
 pyarrow
 python-dotenv 
 psycopg2-binary
+scikit-learn
+streamlit
+numpy
