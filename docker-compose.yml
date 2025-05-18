@@ -13,17 +13,18 @@ services:
       LAKEFS_INSTALLATION_ACCESS_KEY_ID: ${ACCESS_KEY}
       LAKEFS_INSTALLATION_SECRET_ACCESS_KEY: ${SECRET_KEY}
       LAKEFS_DATABASE_TYPE: "local"
-      LAKEFS_AUTH_ENCRYPT_SECRET_KEY: "a_very_long_and_random_secret_key_for_lakefs_auth"
+      LAKEFS_AUTH_ENCRYPT_SECRET_KEY: "your_very_secure_random_string_at_least_32_chars" # <-- เปลี่ยนเป็นค่า random ของคุณ
       LAKEFS_BLOCKSTORE_TYPE: "local"
-      LAKEFS_BLOCKSTORE_LOCAL_PATH: "/home/lakefs/storage"
-    <<: *global-environment
+      LAKEFS_BLOCKSTORE_LOCAL_PATH: "/app/data"
     networks:
-      - prefect_network
+      - PrefectNetwork
     volumes:
-      - ./lakefs_data:/home/lakefs/storage
+      - ./data/lakefs_storage:/app/data
+    <<: *global-environment
 
   database:
-    image: postgres:14-alpine
+    container_name: dsi321-database-1
+    image: postgres:15-alpine
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -33,60 +34,100 @@ services:
       - "5432"
     volumes:
       - prefect_db_data:/var/lib/postgresql/data
-    <<: *global-environment
     networks:
-      - prefect_network
+      - PrefectNetwork
+    <<: *global-environment
 
   server:
     container_name: prefect_server
-    image: prefecthq/prefect:2-latest
+    image: prefecthq/prefect:3.0.5-python3.11
     restart: always
     volumes:
       - prefect_server_data:/root/.prefect
-    entrypoint: ["prefect", "server", "start"]
+    entrypoint: ["/opt/prefect/entrypoint.sh", "prefect", "server", "start"]
     environment:
-      PREFECT_UI_URL: "http://127.0.0.1:4200"
-      PREFECT_API_URL: "http://prefect_server:4200/api"
-      PREFECT_SERVER_API_HOST: "0.0.0.0"
-      PREFECT_API_DATABASE_CONNECTION_URL: "postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}"
+      PREFECT_UI_URL: http://127.0.0.1:4200/api
+      PREFECT_API_URL: http://server:4200/api
+      PREFECT_SERVER_API_HOST: 0.0.0.0
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}
     ports:
       - "4200:4200"
     depends_on:
       - database
-    <<: *global-environment
     networks:
-      - prefect_network
+      - PrefectNetwork
+    <<: *global-environment
 
   worker:
+    container_name: prefect_worker_egat
     build:
       context: .
-      dockerfile: Dockerfile.worker
-    container_name: prefect_worker_egat
+      dockerfile: config/docker/Dockerfile.worker
     restart: always
-    entrypoint: ["prefect", "worker", "start", "-p", "default-agent-pool", "-q", "default"]
-    working_dir: "/opt/prefect/flows"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["prefect", "worker", "start", "-p", "default-agent-pool", "-t", "process"]
     environment:
-      PREFECT_API_URL: "http://prefect_server:4200/api"
+      PREFECT_API_URL: http://server:4200/api
       ACCESS_KEY: ${ACCESS_KEY}
       SECRET_KEY: ${SECRET_KEY}
-      LAKEFS_ENDPOINT: ${LAKEFS_ENDPOINT}
-      LAKEFS_REPOSITORY: ${LAKEFS_REPOSITORY}
-      LAKEFS_BRANCH: ${LAKEFS_BRANCH}
-      LAKEFS_PATH_PARQUET: ${LAKEFS_PATH_PARQUET}
+      LAKEFS_ENDPOINT: http://lakefsdb:8000
+    volumes:
+      - ./src:/opt/prefect/app/src
+      - ./.env:/opt/prefect/app/.env
+    depends_on:
+      - server
+      - lakefsdb
+    networks:
+      - PrefectNetwork
+    <<: *global-environment
+
+  cli:
+    container_name: prefect_cli_egat
+    build:
+      context: .
+      dockerfile: config/docker/Dockerfile.cli
+    entrypoint: "bash"
+    working_dir: "/opt/prefect/app"
+    environment:
+      PREFECT_API_URL: http://server:4200/api
+      ACCESS_KEY: ${ACCESS_KEY}
+      SECRET_KEY: ${SECRET_KEY}
+      LAKEFS_ENDPOINT: http://lakefsdb:8000
+    volumes:
+      - ./src:/opt/prefect/app/src
+      - ./.env:/opt/prefect/app/.env
+    networks:
+      - PrefectNetwork
+    depends_on:
+      - server
+      - database
+      - lakefsdb
+    <<: *global-environment
+
+  streamlit:
+    container_name: streamlit_app_egat
+    build:
+      context: .
+      dockerfile: config/docker/Dockerfile.streamlit
+    ports:
+      - "8501:8501"
+    expose:
+      - "8501"
+    working_dir: "/app"
+    volumes:
+      - ./src/frontend:/app/src/frontend
+      - ./.env:/app/.env
+    networks:
+      - PrefectNetwork
     depends_on:
       - server
       - lakefsdb
     <<: *global-environment
-    networks:
-      - prefect_network
 
 volumes:
   prefect_db_data:
   prefect_server_data:
-  lakefs_data:
+  lakefs_storage:
 
 networks:
-  prefect_network:
+  PrefectNetwork:
     driver: bridge
